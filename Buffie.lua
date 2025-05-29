@@ -1664,11 +1664,35 @@ function Buffie:OnEnable()
 end
 
 function Buffie:OpenConfig()
-    OpenAceGUIConfig()
+    -- Open our own AceGUI config window (not Blizzard options panel)
+    if not AceGUI then return end
+    if self._configFrame and self._configFrame:IsShown() then
+        self._configFrame:Hide()
+        self._configFrame = nil
+        return
+    end
+
+    local frame = AceGUI:Create("Frame")
+    frame:SetTitle("Buffie Settings")
+    frame:SetStatusText("Buffie settings by Pegga")
+    frame:SetLayout("Fill")
+    frame:SetWidth(600)
+    frame:SetHeight(800)
+    frame:EnableResize(false)
+    self._configFrame = frame
+
+    -- Embed the options table in the AceGUI frame without calling AddToBlizOptions again
+    local group = AceGUI:Create("SimpleGroup")
+    group:SetFullWidth(true)
+    group:SetFullHeight(true)
+    frame:AddChild(group)
+
+    -- Open the options in our AceGUI frame
+    AceConfigDialog:Open("BuffieSettings", group)
 end
 
-SLASH_BDS1 = "/bds"
-SlashCmdList["BDS"] = function()
+SLASH_BUFFIE1 = "/buffie"
+SlashCmdList["BUFFIE"] = function()
     if Buffie and Buffie.OpenConfig then
         Buffie:OpenConfig()
     end
