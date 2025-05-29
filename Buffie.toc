@@ -2,7 +2,8 @@
 ## Title: |cffff0000Buffie|r
 ## Notes: Buffie is an addon designed to enhance the display and management of buff durations in World of Warcraft.
 ## Author: |cffe6cc80Pegga|r
-## Version: 1.1.1
+## Version: 1.2.0
+## SavedVariablesPerCharacter: BuffieDB
 ## SavedVariables: BuffieDB
 ## Notes: Addon to manage and customize buff duration display.
 ## DefaultState: Enabled

@@ -50,6 +50,8 @@ local defaults = {
         maxRows = 2,
         unlocked = false,
         anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13},
+        weaponAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -265, -13},
+        debuffAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -65},
         useStaticColor = false,
         staticColor = {1, 1, 1},
         -- Strobe feature defaults
@@ -58,6 +60,244 @@ local defaults = {
         strobeTextHz = 0,      -- Hz, 0 = off
         strobeThresholdMin = 0,
         strobeThresholdSec = 10,
+        -- New layout and unlock defaults
+        buffsUnlocked = false,
+        weaponUnlocked = false,
+        debuffUnlocked = false,
+        weaponPerRow = 2,
+        weaponIconSpacing = 4,
+        weaponIconScale = 1,
+        weaponIconAlpha = 1,
+        debuffsPerRow = 8,
+        debuffMaxRows = 2,
+        debuffIconSpacing = 4,
+        debuffIconScale = 1,
+        debuffIconAlpha = 1,
+    }
+}
+
+-- Table to track strobe phase per button
+local strobeState = {}
+
+local function SaveAnchorPosition(frameType)
+    local frame, dbKey
+    if frameType == "buff" then
+        frame, dbKey = BuffAnchorFrame, "anchorPoint"
+    elseif frameType == "weapon" then
+        frame, dbKey = WeaponEnchantAnchorFrame, "weaponAnchorPoint"
+    elseif frameType == "debuff" then
+        frame, dbKey = DebuffAnchorFrame, "debuffAnchorPoint"
+    end
+    if not frame or not Buffie or not Buffie.db or not Buffie.db.profile then return end
+    local point, relTo, relPoint, x, y = frame:GetPoint()
+    local relToName = relTo and relTo.GetName and relTo:GetName() or "UIParent"
+    Buffie.db.profile[dbKey] = {point, relToName, relPoint, x, y}
+end
+
+local function RestoreAnchorPosition(frameType)
+    local db = Buffie and Buffie.db and Buffie.db.profile
+    local frame, dbKey
+    if frameType == "buff" then
+        frame, dbKey = BuffAnchorFrame, "anchorPoint"
+    elseif frameType == "weapon" then
+        frame, dbKey = WeaponEnchantAnchorFrame, "weaponAnchorPoint"
+    elseif frameType == "debuff" then
+        frame, dbKey = DebuffAnchorFrame, "debuffAnchorPoint"
+    end
+    if frame and db and db[dbKey] then
+        frame:ClearAllPoints()
+        local ap = db[dbKey]
+        local relTo
+        if ap and ap[2] then
+            relTo = _G[ap[2]]
+            if not relTo then relTo = UIParent end
+        else
+            relTo = UIParent
+        end
+        frame:SetPoint(ap[1] or "TOPRIGHT", relTo, ap[3] or "TOPRIGHT", ap[4] or -205, ap[5] or -13)
+    end
+end
+
+-- Helper to update anchor backdrop size based on settings
+local function UpdateAnchorBackdrop(frame, anchorType)
+    if not frame then return end
+    local db = Buffie and Buffie.db and Buffie.db.profile or {}
+    local scale, perRow, rows, spacing, w, h
+    if anchorType == "buff" then
+        scale = db.iconScale or 1
+        perRow = db.buffsPerRow or 8
+        rows = db.maxRows or 2
+        spacing = db.iconSpacing or 4
+        w = perRow * 32 * scale + (perRow-1) * spacing
+        h = rows * 32 * scale + (rows-1) * spacing
+    elseif anchorType == "weapon" then
+        scale = db.weaponIconScale or 1
+        perRow = db.weaponPerRow or 2
+        spacing = db.weaponIconSpacing or 4
+        w = perRow * 32 * scale + (perRow-1) * spacing
+        h = 32 * scale
+    elseif anchorType == "debuff" then
+        scale = db.debuffIconScale or 1
+        perRow = db.debuffsPerRow or 8
+        rows = db.debuffMaxRows or 2
+        spacing = db.debuffIconSpacing or 4
+        w = perRow * 32 * scale + (perRow-1) * spacing
+        h = rows * 32 * scale + (rows-1) * spacing
+    end
+    frame:SetSize(w or 40, h or 40)
+end
+
+-- Create anchor frames with dynamic backdrop sizing
+local function CreateAnchorFrame(name, color, text, anchorType)
+    local frame = CreateFrame("Frame", name, UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    UpdateAnchorBackdrop(frame, anchorType)
+    frame:SetMovable(true)
+    frame:EnableMouse(true)
+    frame:RegisterForDrag("LeftButton")
+    frame:SetClampedToScreen(true)
+    if frame.SetBackdrop then
+        frame:SetBackdrop({bgFile = "Interface/Tooltips/UI-Tooltip-Background"})
+        frame:SetBackdropColor(unpack(color))
+    end
+    frame.text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+    frame.text:SetPoint("CENTER")
+    frame.text:SetText(text)
+    frame:Hide()
+    frame:SetFrameStrata("DIALOG")
+    frame:SetFrameLevel(100)
+
+    local isDragging = false
+
+    frame.UpdateBackdrop = function(self)
+        UpdateAnchorBackdrop(self, anchorType)
+    end
+
+    frame:SetScript("OnShow", function(self)
+        self:UpdateBackdrop()
+        self:SetFrameStrata("TOOLTIP")
+        self:SetFrameLevel(9999)
+    end)
+    frame:SetScript("OnHide", function(self)
+        self:SetFrameStrata("DIALOG")
+        self:SetFrameLevel(100)
+    end)
+
+    frame:SetScript("OnDragStart", function(self)
+        isDragging = true
+        self:StartMoving()
+        self:SetFrameStrata("TOOLTIP")
+        self:SetFrameLevel(9999)
+    end)
+    frame:SetScript("OnDragStop", function(self)
+        self:StopMovingOrSizing()
+        isDragging = false
+        if name == "BuffieAnchorFrame" then
+            SaveAnchorPosition("buff")
+        elseif name == "BuffieWeaponEnchantAnchorFrame" then
+            SaveAnchorPosition("weapon")
+        elseif name == "BuffieDebuffAnchorFrame" then
+            SaveAnchorPosition("debuff")
+        end
+        Buffie:SaveAllSettings()
+        self:SetFrameStrata("TOOLTIP")
+        self:SetFrameLevel(9999)
+    end)
+    frame:SetScript("OnMouseDown", function(self, btn)
+        if btn == "LeftButton" then
+            isDragging = true
+            self:StartMoving()
+            self:SetFrameStrata("TOOLTIP")
+            self:SetFrameLevel(9999)
+        end
+    end)
+    frame:SetScript("OnMouseUp", function(self, btn)
+        if btn == "LeftButton" then
+            self:StopMovingOrSizing()
+            isDragging = false
+            if name == "BuffieAnchorFrame" then
+                SaveAnchorPosition("buff")
+            elseif name == "BuffieWeaponEnchantAnchorFrame" then
+                SaveAnchorPosition("weapon")
+            elseif name == "BuffieDebuffAnchorFrame" then
+                SaveAnchorPosition("debuff")
+            end
+            Buffie:SaveAllSettings()
+            self:SetFrameStrata("TOOLTIP")
+            self:SetFrameLevel(9999)
+        end
+    end)
+
+    function frame:SafeRestoreAnchorPosition()
+        if not isDragging then
+            if name == "BuffieAnchorFrame" then
+                RestoreAnchorPosition("buff")
+            elseif name == "BuffieWeaponEnchantAnchorFrame" then
+                RestoreAnchorPosition("weapon")
+            elseif name == "BuffieDebuffAnchorFrame" then
+                RestoreAnchorPosition("debuff")
+            end
+        end
+    end
+
+    return frame
+end
+
+-- Anchor frame creators using the above
+local function CreateBuffAnchor()
+    if BuffAnchorFrame then return BuffAnchorFrame end
+    BuffAnchorFrame = CreateAnchorFrame("BuffieAnchorFrame", {0, 0.5, 1, 0.7}, "Buffs\nDrag Me", "buff")
+    return BuffAnchorFrame
+end
+
+local function CreateWeaponEnchantAnchor()
+    if WeaponEnchantAnchorFrame then return WeaponEnchantAnchorFrame end
+    WeaponEnchantAnchorFrame = CreateAnchorFrame("BuffieWeaponEnchantAnchorFrame", {0.3, 1, 0.3, 0.7}, "Weapon\nDrag Me", "weapon")
+    return WeaponEnchantAnchorFrame
+end
+
+local function CreateDebuffAnchor()
+    if DebuffAnchorFrame then return DebuffAnchorFrame end
+    DebuffAnchorFrame = CreateAnchorFrame("BuffieDebuffAnchorFrame", {1, 0.5, 0, 0.7}, "Debuffs\nDrag Me", "debuff")
+    return DebuffAnchorFrame
+end
+
+-- Add new anchorPoint defaults for weapon and debuff
+local defaults = {
+    profile = {
+        fontSize = 12,
+        displayMode = 1,
+        colorThresholds = DeepCopyThresholds(defaultThresholds),
+        iconScale = 1,
+        iconAlpha = 1,
+        timerAlpha = 1,
+        iconSpacing = 4,
+        buffsPerRow = 8,
+        maxRows = 2,
+        unlocked = false,
+        anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13},
+        weaponAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -265, -13},
+        debuffAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -65},
+        useStaticColor = false,
+        staticColor = {1, 1, 1},
+        -- Strobe feature defaults
+        strobeEnabled = false,
+        strobeIconHz = 0,      -- Hz, 0 = off
+        strobeTextHz = 0,      -- Hz, 0 = off
+        strobeThresholdMin = 0,
+        strobeThresholdSec = 10,
+        -- New layout and unlock defaults
+        buffsUnlocked = false,
+        weaponUnlocked = false,
+        debuffUnlocked = false,
+        weaponPerRow = 2,
+        weaponIconSpacing = 4,
+        weaponIconScale = 1,
+        weaponIconAlpha = 1,
+        debuffsPerRow = 8,
+        debuffMaxRows = 2,
+        debuffIconSpacing = 4,
+        debuffIconScale = 1,
+        debuffIconAlpha = 1,
     }
 }
 
@@ -89,10 +329,10 @@ local function RestoreAnchorPosition()
         BuffAnchorFrame:SetPoint(ap[1] or "TOPRIGHT", relTo, ap[3] or "TOPRIGHT", ap[4] or -205, ap[5] or -13)
     end
 end
-
 local function CreateBuffAnchor()
     if BuffAnchorFrame then return BuffAnchorFrame end
     BuffAnchorFrame = CreateFrame("Frame", "BuffieAnchorFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    -- Initial size, will be updated dynamically
     BuffAnchorFrame:SetSize(40, 40)
     BuffAnchorFrame:SetMovable(true)
     BuffAnchorFrame:EnableMouse(true)
@@ -111,6 +351,30 @@ local function CreateBuffAnchor()
 
     local isDragging = false
 
+    -- Add UpdateBackdrop method for dynamic sizing
+    function BuffAnchorFrame:UpdateBackdrop()
+        local db = Buffie and Buffie.db and Buffie.db.profile or {}
+        local scale = db.iconScale or 1
+        local perRow = db.buffsPerRow or 8
+        local rows = db.maxRows or 2
+        local spacing = db.iconSpacing or 4
+        local w = perRow * 32 * scale + (perRow-1) * spacing
+        local h = rows * 32 * scale + (rows-1) * spacing
+        self:SetSize(w or 40, h or 40)
+    end
+
+    BuffAnchorFrame:SetScript("OnShow", function(self)
+        -- Always bring to top when shown
+        self:UpdateBackdrop()
+        self:SetFrameStrata("TOOLTIP")
+        self:SetFrameLevel(9999)
+    end)
+    BuffAnchorFrame:SetScript("OnHide", function(self)
+        -- Restore to normal when hidden
+        self:SetFrameStrata("DIALOG")
+        self:SetFrameLevel(100)
+    end)
+
     BuffAnchorFrame:SetScript("OnDragStart", function(self)
         isDragging = true
         self:StartMoving()
@@ -120,6 +384,8 @@ local function CreateBuffAnchor()
         isDragging = false
         SaveAnchorPosition()
         Buffie:SaveAllSettings()
+        self:SetFrameStrata("TOOLTIP")
+        self:SetFrameLevel(9999)
     end)
     BuffAnchorFrame:SetScript("OnMouseDown", function(self, btn)
         if btn == "LeftButton" then
@@ -133,6 +399,8 @@ local function CreateBuffAnchor()
             isDragging = false
             SaveAnchorPosition()
             Buffie:SaveAllSettings()
+            self:SetFrameStrata("TOOLTIP")
+            self:SetFrameLevel(9999)
         end
     end)
 
@@ -310,15 +578,19 @@ function Buffie:HookBuffies()
                 end
                 button.duration:SetAlpha(db.timerAlpha or 1)
             end
-            if db.iconScale and button.SetScale then
-                button:SetScale(db.iconScale)
+            -- Only apply buff icon settings to BuffButton, not DebuffButton
+            if button:GetName() and button:GetName():find("^BuffButton") then
+                if db.iconScale and button.SetScale then
+                    button:SetScale(db.iconScale)
+                end
+                if db.iconAlpha and button.SetAlpha then
+                    button:SetAlpha(db.iconAlpha)
+                end
+                if button.icon and button.icon.SetAlpha then
+                    button.icon:SetAlpha(db.iconAlpha or 1)
+                end
             end
-            if db.iconAlpha and button.SetAlpha then
-                button:SetAlpha(db.iconAlpha)
-            elseif button.icon and button.icon.SetAlpha then
-                button.icon:SetAlpha(db.iconAlpha or 1)
-            end
-
+            -- DebuffButton scale/alpha handled in LayoutBuffs
             -- Strobe logic: initialize strobe state if needed
             if not strobeState[button] then
                 strobeState[button] = {iconPhase = 0, textPhase = 0}
@@ -335,35 +607,59 @@ end
 function Buffie:LayoutBuffs()
     if not self.db or not self.db.profile then return end
     local db = self.db.profile
-    local anchor = CreateBuffAnchor()
-    local spacing = db.iconSpacing or 4
-    local perRow = db.buffsPerRow or 8
+
+    -- Defensive fallback for all layout variables
+    local buffsPerRow = db.buffsPerRow or 8
     local maxRows = db.maxRows or 2
-    local scale = db.iconScale or 1
+    local iconScale = db.iconScale or 1
+    local iconAlpha = db.iconAlpha or 1
+    local timerAlpha = db.timerAlpha or 1
+    local iconSpacing = db.iconSpacing or 4
+
+    local weaponPerRow = db.weaponPerRow or 2
+    local weaponIconSpacing = db.weaponIconSpacing or 4
+    local weaponIconScale = db.weaponIconScale or 1
+    local weaponIconAlpha = db.weaponIconAlpha or 1
+
+    local debuffsPerRow = db.debuffsPerRow or 8
+    local debuffMaxRows = db.debuffMaxRows or 2
+    local debuffIconSpacing = db.debuffIconSpacing or 4
+    local debuffIconScale = db.debuffIconScale or 1
+    -- local debuffIconAlpha = db.debuffIconAlpha or 1 -- REMOVE: no longer used
+
+    local anchor = CreateBuffAnchor()
+    local weaponAnchor = CreateWeaponEnchantAnchor()
+    local debuffAnchor = CreateDebuffAnchor()
+    local scale = iconScale
     local iconSize = 32 * scale
 
-    local parent = db.unlocked and anchor or UIParent
+    -- Buffs
+    local parent = db.buffsUnlocked and anchor or UIParent
+    -- Weapon enchants
+    local weaponParent = db.weaponUnlocked and weaponAnchor or UIParent
+    -- Debuffs
+    local debuffParent = db.debuffUnlocked and debuffAnchor or UIParent
+
+    -- Restore anchor positions
+    if anchor.SafeRestoreAnchorPosition then anchor:SafeRestoreAnchorPosition() end
+    if weaponAnchor.SafeRestoreAnchorPosition then weaponAnchor:SafeRestoreAnchorPosition() end
+    if debuffAnchor.SafeRestoreAnchorPosition then debuffAnchor:SafeRestoreAnchorPosition() end
+
+    -- Show/hide anchors
+    if db.buffsUnlocked then anchor:Show() else anchor:Hide() end
+    if db.weaponUnlocked then weaponAnchor:Show() else weaponAnchor:Hide() end
+    if db.debuffUnlocked then debuffAnchor:Show() else debuffAnchor:Hide() end
+
+    -- Layout buffs (use only buff settings)
     local totalBuffs = BUFF_ACTUAL_DISPLAY or 32
     local shownCount = 0
-    local maxBuffs = perRow * maxRows
-
-    if anchor.SafeRestoreAnchorPosition then
-        anchor:SafeRestoreAnchorPosition()
-    else
-        RestoreAnchorPosition()
-    end
-
-    if db.unlocked then
-        local width = perRow * iconSize + (perRow-1)*spacing
-        local height = maxRows * iconSize + (maxRows-1)*spacing
-        anchor:SetSize(width, height)
-        anchor:Show()
-        anchor:SetFrameStrata("DIALOG")
-        anchor:SetFrameLevel(100)
-        anchor:EnableMouse(true)
-    else
-        anchor:Hide()
-    end
+    local maxBuffs = buffsPerRow * maxRows
+    local buffScale = iconScale
+    local buffSpacing = iconSpacing
+    local buffAlpha = iconAlpha
+    local buffPerRow = buffsPerRow
+    local buffMaxRows = maxRows
+    local buffIconSize = 32 * buffScale
 
     local visibleBuffs = {}
     for i = 1, totalBuffs do
@@ -381,22 +677,21 @@ function Buffie:LayoutBuffs()
         local button = visibleBuffs[i]
         if i <= maxBuffs then
             button:ClearAllPoints()
-            button:SetScale(scale)
-            button:SetAlpha(db.iconAlpha or 1)
+            button:SetScale(buffScale)
+            button:SetAlpha(buffAlpha)
             button:Show()
-            local row = math.floor((i-1) / perRow)
-            local col = (i-1) % perRow
+            local row = math.floor((i-1) / buffPerRow)
+            local col = (i-1) % buffPerRow
             if row == 0 and col == 0 then
                 button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, 0)
             elseif col == 0 then
-                local prevRowBtn = visibleBuffs[i - perRow]
-                button:SetPoint("TOPRIGHT", prevRowBtn, "BOTTOMRIGHT", 0, -spacing)
+                local prevRowBtn = visibleBuffs[i - buffPerRow]
+                button:SetPoint("TOPRIGHT", prevRowBtn, "BOTTOMRIGHT", 0, -buffSpacing)
             else
                 local prevBtn = visibleBuffs[i - 1]
-                button:SetPoint("RIGHT", prevBtn, "LEFT", -spacing, 0)
+                button:SetPoint("RIGHT", prevBtn, "LEFT", -buffSpacing, 0)
             end
-            shownCount = shownCount + 1
-            if db.unlocked then
+            if db.buffsUnlocked then
                 button:EnableMouse(false)
             else
                 button:EnableMouse(true)
@@ -407,6 +702,76 @@ function Buffie:LayoutBuffs()
     end
     for i = #visibleBuffs+1, totalBuffs do
         local button = _G["BuffButton"..i]
+        if button then button:Show() end
+    end
+
+    -- Layout weapon enchants (independent layout)
+    for i = 1, 2 do
+        local button = _G["TempEnchant"..i]
+        if button then
+            button:SetParent(weaponParent)
+            if db.weaponUnlocked then
+                button:ClearAllPoints()
+                button:SetScale(weaponIconScale)
+                button:SetAlpha(weaponIconAlpha)
+                button:SetPoint("TOPRIGHT", weaponAnchor, "TOPRIGHT", -(i-1)*(32*weaponIconScale+weaponIconSpacing), 0)
+                button:Show()
+                button:EnableMouse(false)
+            else
+                button:SetScale(1)
+                button:SetAlpha(1)
+                button:EnableMouse(true)
+            end
+        end
+    end
+
+    -- Layout debuffs (independent layout, use only debuff settings)
+    local totalDebuffs = DEBUFF_ACTUAL_DISPLAY or 16
+    local debuffPerRow = debuffsPerRow
+    local debuffMaxRows = debuffMaxRows
+    local debuffScale = debuffIconScale
+    local debuffIconSize = 32 * debuffScale
+    local debuffSpacing = debuffIconSpacing
+    -- local debuffAlpha = debuffIconAlpha -- REMOVE: no longer used
+    local visibleDebuffs = {}
+    for i = 1, totalDebuffs do
+        local button = _G["DebuffButton"..i]
+        if button then
+            button:SetParent(debuffParent)
+            button:Show()
+            if button:IsVisible() then
+                table.insert(visibleDebuffs, button)
+            end
+        end
+    end
+    for i = 1, #visibleDebuffs do
+        local button = visibleDebuffs[i]
+        if i <= debuffPerRow * debuffMaxRows then
+            button:ClearAllPoints()
+            button:SetScale(debuffScale)
+            button:SetAlpha(1) -- Always fully opaque for now
+            button:Show()
+            local row = math.floor((i-1) / debuffPerRow)
+            local col = (i-1) % debuffPerRow
+            if row == 0 and col == 0 then
+                button:SetPoint("TOPRIGHT", debuffAnchor, "TOPRIGHT", 0, 0)
+            elseif col == 0 then
+                local prevRowBtn = visibleDebuffs[i - debuffPerRow]
+                button:SetPoint("TOPRIGHT", prevRowBtn, "BOTTOMRIGHT", 0, -debuffSpacing)
+            else
+                local prevBtn = visibleDebuffs[i - 1]
+                button:SetPoint("RIGHT", prevBtn, "LEFT", -debuffSpacing, 0)
+            end
+            -- REMOVE: debuff icon alpha setting
+            -- if button.icon and button.icon.SetAlpha then
+            --     button.icon:SetAlpha(debuffAlpha)
+            -- end
+        else
+            button:Hide()
+        end
+    end
+    for i = #visibleDebuffs+1, totalDebuffs do
+        local button = _G["DebuffButton"..i]
         if button then button:Show() end
     end
 end
@@ -431,30 +796,33 @@ local function TimerUpdater(self, elapsed)
             if button and button:IsVisible() and strobeState[button] and button.timeLeft then
                 local timeLeft = button.timeLeft or strobeState[button].lastTimeLeft or 0
                 if timeLeft <= strobeThreshold then
-                    -- Icon strobe (only icon)
+                    -- Icon strobe: only affect icon if strobeIconHz > 0
                     if (db.strobeIconHz or 0) > 0 then
                         strobeState[button].iconPhase = (strobeState[button].iconPhase or 0) + elapsed
                         local freq = db.strobeIconHz
-                        local alpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].iconPhase)
-                        if button.SetAlpha then button:SetAlpha(alpha) end
-                        if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(alpha) end
+                        local iconAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].iconPhase)
+                        if button.SetAlpha then button:SetAlpha(iconAlpha) end
+                        if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(iconAlpha) end
                     else
+                        -- Reset icon alpha if icon strobe is off
                         if button.SetAlpha then button:SetAlpha(db.iconAlpha or 1) end
                         if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(db.iconAlpha or 1) end
                         strobeState[button].iconPhase = 0
                     end
-                    -- Text strobe (only timer text)
+
+                    -- Text strobe: only affect timer text if strobeTextHz > 0
                     if (db.strobeTextHz or 0) > 0 then
                         strobeState[button].textPhase = (strobeState[button].textPhase or 0) + elapsed
                         local freq = db.strobeTextHz
-                        local alpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].textPhase)
-                        if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(alpha) end
+                        local textAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].textPhase)
+                        if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(textAlpha) end
                     else
+                        -- Reset text alpha if text strobe is off
                         if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(db.timerAlpha or 1) end
                         strobeState[button].textPhase = 0
                     end
                 else
-                    -- Reset to normal if above threshold
+                    -- Reset both icon and text alpha if above threshold
                     if button.SetAlpha then button:SetAlpha(db.iconAlpha or 1) end
                     if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(db.iconAlpha or 1) end
                     if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(db.timerAlpha or 1) end
@@ -467,455 +835,48 @@ local function TimerUpdater(self, elapsed)
 end
 
 local aceguiFrame = nil
-local aceguiTestTicker = nil
-local aceguiTestTime = 125
 
-local function StopTestTicker()
-    if aceguiTestTicker then
-        Buffie:CancelTimer(aceguiTestTicker)
-        aceguiTestTicker = nil
-    end
+-- Ensure blizzardDefaults is always defined and valid
+if not blizzardDefaults then
+    blizzardDefaults = {
+        fontSize = 12,
+        displayMode = 0,
+        iconScale = 1,
+        iconAlpha = 1,
+        timerAlpha = 1,
+        colorThresholds = DeepCopyThresholds(defaultThresholds),
+        iconSpacing = 4,
+        buffsPerRow = 8,
+        maxRows = 2,
+        unlocked = false,
+        anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13},
+        weaponAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -265, -13},
+        debuffAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -65},
+        useStaticColor = false,
+        staticColor = {1, 1, 1},
+        strobeEnabled = false,
+        strobeIconHz = 0,
+        strobeTextHz = 0,
+        strobeThresholdMin = 0,
+        strobeThresholdSec = 10,
+        buffsUnlocked = false,
+        weaponUnlocked = false,
+        debuffUnlocked = false,
+        weaponPerRow = 2,
+        weaponIconSpacing = 4,
+        weaponIconScale = 1,
+        weaponIconAlpha = 1,
+        debuffsPerRow = 8,
+        debuffMaxRows = 2,
+        debuffIconSpacing = 4,
+        debuffIconScale = 1,
+        debuffIconAlpha = 1,
+    }
 end
-
-local function OpenAceGUIConfig()
-    if aceguiFrame then
-        StopTestTicker()
-        aceguiFrame:Hide()
-        aceguiFrame = nil
-    end
-
-    local db = Buffie.db.profile
-
-    aceguiFrame = AceGUI:Create("Frame")
-    aceguiFrame:SetTitle("Settings")
-    aceguiFrame:SetStatusText("Buffie settings by Pegga")
-    aceguiFrame:SetLayout("List")
-    aceguiFrame:SetWidth(450)
-    aceguiFrame:SetHeight(935)
-    aceguiFrame:EnableResize(false)
-
-    aceguiFrame:SetCallback("OnClose", function(widget)
-        StopTestTicker()
-        if aceguiFrame then
-            aceguiFrame:Hide()
-            aceguiFrame = nil
-        end
-    end)
-
-    local displayDropdown = AceGUI:Create("Dropdown")
-    displayDropdown:SetLabel("Display Mode")
-    displayDropdown:SetList(displayModeList)
-    displayDropdown:SetValue(db.displayMode)
-    displayDropdown:SetWidth(200)
-    displayDropdown:SetCallback("OnValueChanged", function(_,_,val)
-        db.displayMode = val
-        Buffie:UpdateBuffies()
-        if aceguiFrame.exampleBox then
-            local t = tonumber(aceguiFrame.exampleBox:GetText()) or aceguiTestTime
-            aceguiFrame.exampleLabel:SetText("Example: |cff00ff00" .. FormatBuffieExample(t, db.displayMode) .. "|r")
-        end
-    end)
-    aceguiFrame:AddChild(displayDropdown)
-
-    local exampleGroup = AceGUI:Create("InlineGroup")
-    exampleGroup:SetFullWidth(true)
-    exampleGroup:SetLayout("Flow")
-    exampleGroup:SetTitle("Preview")
-
-    local exampleBox = AceGUI:Create("EditBox")
-    exampleBox:SetLabel("Test Time (seconds)")
-    exampleBox:SetWidth(120)
-    exampleBox:SetText(tostring(aceguiTestTime))
-    exampleGroup:AddChild(exampleBox)
-
-    local exampleLabel = AceGUI:Create("Label")
-    exampleLabel:SetText("Example: |cff00ff00" .. FormatBuffieExample(aceguiTestTime, db.displayMode) .. "|r")
-    exampleLabel:SetWidth(250)
-    exampleGroup:AddChild(exampleLabel)
-
-    local btnGroup = AceGUI:Create("SimpleGroup")
-    btnGroup:SetLayout("Flow")
-    btnGroup:SetFullWidth(false)
-
-    local startBtn = AceGUI:Create("Button")
-    startBtn:SetText("Start")
-    startBtn:SetWidth(80)
-    btnGroup:AddChild(startBtn)
-
-    local stopBtn = AceGUI:Create("Button")
-    stopBtn:SetText("Stop")
-    stopBtn:SetWidth(80)
-    btnGroup:AddChild(stopBtn)
-
-    exampleGroup:AddChild(btnGroup)
-
-    aceguiFrame.exampleBox = exampleBox
-    aceguiFrame.exampleLabel = exampleLabel
-
-    local function updateExampleLabel(val)
-        local t = tonumber(val) or 0
-        aceguiTestTime = t
-        if aceguiFrame and aceguiFrame.exampleLabel then
-            aceguiFrame.exampleLabel:SetText("Example: |cff00ff00" .. FormatBuffieExample(t, db.displayMode) .. "|r")
-        end
-    end
-
-    exampleBox:SetCallback("OnEnterPressed", function(_,_,val)
-        updateExampleLabel(val)
-    end)
-    exampleBox:SetCallback("OnFocusLost", function(widget)
-        updateExampleLabel(widget:GetText())
-    end)
-
-    local function tick()
-        if not aceguiFrame then
-            StopTestTicker()
-            return
-        end
-        if aceguiTestTime > 0 then
-            aceguiTestTime = aceguiTestTime - 1
-            if aceguiFrame.exampleBox then
-                aceguiFrame.exampleBox:SetText(tostring(aceguiTestTime))
-            end
-            if aceguiFrame.exampleLabel then
-                aceguiFrame.exampleLabel:SetText("Example: |cff00ff00" .. FormatBuffieExample(aceguiTestTime, db.displayMode) .. "|r")
-            end
-        else
-            StopTestTicker()
-        end
-    end
-
-    startBtn:SetCallback("OnClick", function()
-        StopTestTicker()
-        aceguiTestTime = tonumber(aceguiFrame.exampleBox:GetText()) or 0
-        if aceguiFrame.exampleLabel then
-            aceguiFrame.exampleLabel:SetText("Example: |cff00ff00" .. FormatBuffieExample(aceguiTestTime, db.displayMode) .. "|r")
-        end
-        aceguiTestTicker = Buffie:ScheduleRepeatingTimer(tick, 1)
-    end)
-
-    stopBtn:SetCallback("OnClick", function()
-        StopTestTicker()
-    end)
-
-    aceguiFrame:AddChild(exampleGroup)
-
-    local fontSlider = AceGUI:Create("Slider")
-    fontSlider:SetLabel("Font Size")
-    fontSlider:SetSliderValues(8, 24, 1)
-    fontSlider:SetValue(db.fontSize)
-    fontSlider:SetWidth(320)
-    fontSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.fontSize = val
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(fontSlider)
-
-    local iconScaleSlider = AceGUI:Create("Slider")
-    iconScaleSlider:SetLabel("Buff Icon Scale")
-    iconScaleSlider:SetSliderValues(0.5, 2, 0.01)
-    iconScaleSlider:SetValue(db.iconScale or 1)
-    iconScaleSlider:SetWidth(320)
-    iconScaleSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.iconScale = val
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(iconScaleSlider)
-
-    local iconAlphaSlider = AceGUI:Create("Slider")
-    iconAlphaSlider:SetLabel("Buff Icon Transparency")
-    iconAlphaSlider:SetSliderValues(0, 1, 0.01)
-    iconAlphaSlider:SetValue(db.iconAlpha or 1)
-    iconAlphaSlider:SetWidth(320)
-    iconAlphaSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.iconAlpha = val
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(iconAlphaSlider)
-
-    local timerAlphaSlider = AceGUI:Create("Slider")
-    timerAlphaSlider:SetLabel("Timer Text Transparency")
-    timerAlphaSlider:SetSliderValues(0, 1, 0.01)
-    timerAlphaSlider:SetValue(db.timerAlpha or 1)
-    timerAlphaSlider:SetWidth(320)
-    timerAlphaSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.timerAlpha = val
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(timerAlphaSlider)
-
-    local thresholdsLabel = AceGUI:Create("Label")
-    thresholdsLabel:SetText("Color Thresholds (minutes, seconds, operator, color):")
-    aceguiFrame:AddChild(thresholdsLabel)
-
-    local function RefreshThresholds()
-        if aceguiFrame.thresholdsGroup then
-            aceguiFrame.thresholdsGroup:Hide()
-            aceguiFrame.thresholdsGroup = nil
-        end
-
-        local group = AceGUI:Create("SimpleGroup")
-        group:SetFullWidth(true)
-        group:SetLayout("List")
-        aceguiFrame.thresholdsGroup = group
-        aceguiFrame:AddChild(group)
-
-        for i, entry in ipairs(db.colorThresholds) do
-            local row = AceGUI:Create("InlineGroup")
-            row:SetLayout("Flow")
-            row:SetFullWidth(true)
-            row:SetTitle("Threshold " .. i)
-
-            local opDropdown = AceGUI:Create("Dropdown")
-            opDropdown:SetLabel("Op")
-            opDropdown:SetList({["<"] = "<", ["<="] = "<=", [">"] = ">", [">="] = ">=", ["="] = "="})
-            opDropdown:SetValue(entry.op or "<=")
-            opDropdown:SetWidth(60)
-            opDropdown:SetCallback("OnValueChanged", function(_,_,val)
-                entry.op = val
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            row:AddChild(opDropdown)
-
-            local minEdit = AceGUI:Create("EditBox")
-            minEdit:SetLabel("Min")
-            minEdit:SetWidth(50)
-            minEdit:SetText(entry.min ~= nil and tostring(entry.min) or "0")
-            minEdit:SetCallback("OnEnterPressed", function(_,_,val)
-                local num = tonumber(val) or 0
-                if num < 0 then num = 0 end
-                entry.min = num
-                minEdit:SetText(tostring(entry.min))
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            minEdit:SetCallback("OnFocusLost", function(widget)
-                local num = tonumber(widget:GetText()) or 0
-                if num < 0 then num = 0 end
-                widget:SetText(tostring(num))
-                entry.min = num
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            row:AddChild(minEdit)
-
-            local secEdit = AceGUI:Create("EditBox")
-            secEdit:SetLabel("Sec")
-            secEdit:SetWidth(50)
-            secEdit:SetText(entry.sec ~= nil and tostring(entry.sec) or "0")
-            secEdit:SetCallback("OnEnterPressed", function(_,_,val)
-                local num = tonumber(val) or 0
-                if num < 0 then num = 0 end
-                entry.sec = num
-                secEdit:SetText(tostring(entry.sec))
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            secEdit:SetCallback("OnFocusLost", function(widget)
-                local num = tonumber(widget:GetText()) or 0
-                if num < 0 then num = 0 end
-                widget:SetText(tostring(num))
-                entry.sec = num
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            row:AddChild(secEdit)
-
-            local colorPicker = AceGUI:Create("ColorPicker")
-            colorPicker:SetLabel("Color")
-            colorPicker:SetHasAlpha(false)
-            colorPicker:SetColor(unpack(entry.color))
-            colorPicker:SetCallback("OnValueChanged", function(_,_,r,g,b)
-                entry.color = {r,g,b}
-                if Buffie and Buffie.UpdateBuffies and type(Buffie.UpdateBuffies) == "function" then
-                    pcall(function() Buffie:UpdateBuffies() end)
-                end
-            end)
-            row:AddChild(colorPicker)
-
-            group:AddChild(row)
-        end
-    end
-
-    RefreshThresholds()
-
-    local spacingSlider = AceGUI:Create("Slider")
-    spacingSlider:SetLabel("Buff Icon Spacing: " .. tostring(db.iconSpacing or 4))
-    spacingSlider:SetSliderValues(0, 32, 1)
-    spacingSlider:SetValue(db.iconSpacing or 4)
-    spacingSlider:SetWidth(320)
-    spacingSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.iconSpacing = val
-        spacingSlider:SetLabel("Buff Icon Spacing: " .. tostring(val))
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(spacingSlider)
-
-    local perRowSlider = AceGUI:Create("Slider")
-    perRowSlider:SetLabel("Buffs Per Row: " .. tostring(db.buffsPerRow or 8))
-    perRowSlider:SetSliderValues(1, 16, 1)
-    perRowSlider:SetValue(db.buffsPerRow or 8)
-    perRowSlider:SetWidth(320)
-    perRowSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.buffsPerRow = val
-        perRowSlider:SetLabel("Buffs Per Row: " .. tostring(val))
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(perRowSlider)
-
-    local maxRowsSlider = AceGUI:Create("Slider")
-    maxRowsSlider:SetLabel("Max Rows: " .. tostring(db.maxRows or 2))
-    maxRowsSlider:SetSliderValues(1, 8, 1)
-    maxRowsSlider:SetValue(db.maxRows or 2)
-    maxRowsSlider:SetWidth(320)
-    maxRowsSlider:SetCallback("OnValueChanged", function(_,_,val)
-        db.maxRows = val
-        maxRowsSlider:SetLabel("Max Rows: " .. tostring(val))
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(maxRowsSlider)
-
-    local unlockBtn = AceGUI:Create("Button")
-    unlockBtn:SetText(db.unlocked and "Lock Buffs" or "Unlock Buffs")
-    unlockBtn:SetWidth(160)
-    unlockBtn:SetCallback("OnClick", function()
-        db.unlocked = not db.unlocked
-        unlockBtn:SetText(db.unlocked and "Lock Buffs" or "Unlock Buffs")
-        if not db.unlocked then
-            SaveAnchorPosition()
-            Buffie:SaveAllSettings()
-        end
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(unlockBtn)
-
-    local saveBtn = AceGUI:Create("Button")
-    saveBtn:SetText("Save All Settings")
-    saveBtn:SetWidth(160)
-    saveBtn:SetCallback("OnClick", function()
-        Buffie:SaveAllSettings()
-        Buffie:RestoreAllSettings()
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(saveBtn)
-
-    local resetBtn = AceGUI:Create("Button")
-    resetBtn:SetText("Reset to Defaults")
-    resetBtn:SetWidth(160)
-    resetBtn:SetCallback("OnClick", function()
-        db.fontSize = 12
-        db.displayMode = 0
-        db.iconScale = 1
-        db.iconAlpha = 1
-        db.timerAlpha = 1
-        db.colorThresholds = DeepCopyThresholds(defaultThresholds)
-        db.iconSpacing = 4
-        db.buffsPerRow = 8
-        db.maxRows = 2
-        db.unlocked = false
-        db.anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13}
-        Buffie:RestoreAllSettings()
-        Buffie:UpdateBuffies()
-    end)
-    aceguiFrame:AddChild(resetBtn)
-
-    local resetBlizzardBtn = AceGUI:Create("Button")
-    resetBlizzardBtn:SetText("Reset to Blizzard Defaults")
-    resetBlizzardBtn:SetWidth(200)
-    resetBlizzardBtn:SetCallback("OnClick", function()
-        Buffie:ResetToBlizzard()
-        Buffie:RestoreAllSettings()
-    end)
-    aceguiFrame:AddChild(resetBlizzardBtn)
-
-    local strobeGroup = AceGUI:Create("Group")
-    strobeGroup:SetTitle("Strobe Effect")
-    strobeGroup:SetLayout("Flow")
-    strobeGroup:SetFullWidth(true)
-    strobeGroup:SetOrder(9)
-
-    local strobeEnabled = AceGUI:Create("CheckBox")
-    strobeEnabled:SetLabel("Enable Strobe")
-    strobeEnabled:SetValue(db.strobeEnabled)
-    strobeEnabled:SetCallback("OnValueChanged", function(_, _, value)
-        db.strobeEnabled = value
-        Buffie:UpdateBuffies()
-    end)
-    strobeGroup:AddChild(strobeEnabled)
-
-    local strobeIconHz = AceGUI:Create("Slider")
-    strobeIconHz:SetLabel("Icon Strobe Speed (Hz, 0=off)")
-    strobeIconHz:SetSliderValues(0, 5, 0.1)
-    strobeIconHz:SetValue(db.strobeIconHz or 0)
-    strobeIconHz:SetWidth(320)
-    strobeIconHz:SetCallback("OnValueChanged", function(_,_,val)
-        db.strobeIconHz = val
-        Buffie:UpdateBuffies()
-    end)
-    strobeGroup:AddChild(strobeIconHz)
-
-    local strobeTextHz = AceGUI:Create("Slider")
-    strobeTextHz:SetLabel("Text Strobe Speed (Hz, 0=off)")
-    strobeTextHz:SetSliderValues(0, 5, 0.1)
-    strobeTextHz:SetValue(db.strobeTextHz or 0)
-    strobeTextHz:SetWidth(320)
-    strobeTextHz:SetCallback("OnValueChanged", function(_,_,val)
-        db.strobeTextHz = val
-        Buffie:UpdateBuffies()
-    end)
-    strobeGroup:AddChild(strobeTextHz)
-
-    local strobeThresholdMin = AceGUI:Create("EditBox")
-    strobeThresholdMin:SetLabel("Strobe Threshold Minutes")
-    strobeThresholdMin:SetWidth(80)
-    strobeThresholdMin:SetText(tostring(db.strobeThresholdMin or 0))
-    strobeThresholdMin:SetCallback("OnEnterPressed", function(_,_,val)
-        local num = tonumber(val) or 0
-        if num < 0 then num = 0 end
-        db.strobeThresholdMin = num
-        strobeThresholdMin:SetText(tostring(db.strobeThresholdMin))
-        Buffie:UpdateBuffies()
-    end)
-    strobeGroup:AddChild(strobeThresholdMin)
-
-    local strobeThresholdSec = AceGUI:Create("EditBox")
-    strobeThresholdSec:SetLabel("Strobe Threshold Seconds")
-    strobeThresholdSec:SetWidth(80)
-    strobeThresholdSec:SetText(tostring(db.strobeThresholdSec or 0))
-    strobeThresholdSec:SetCallback("OnEnterPressed", function(_,_,val)
-        local num = tonumber(val) or 0
-        if num < 0 then num = 0 end
-        db.strobeThresholdSec = num
-        strobeThresholdSec:SetText(tostring(db.strobeThresholdSec))
-        Buffie:UpdateBuffies()
-    end)
-    strobeGroup:AddChild(strobeThresholdSec)
-
-    aceguiFrame:AddChild(strobeGroup)
-end
-
-local blizzardDefaults = {
-    fontSize = 12,
-    displayMode = 1,
-    colorThresholds = DeepCopyThresholds(defaultThresholds),
-    iconScale = 1,
-    iconAlpha = 1,
-    timerAlpha = 1,
-    iconSpacing = 0,
-    buffsPerRow = 8,
-    maxRows = 2,
-    unlocked = false,
-    anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13},
-}
 
 function Buffie:ResetToBlizzard()
-    local db = self.db.profile
+    local db = self.db and self.db.profile
+    if not db or not blizzardDefaults then return end
     for k, v in pairs(blizzardDefaults) do
         if type(v) == "table" then
             if k == "colorThresholds" then
@@ -981,77 +942,42 @@ function Buffie:OnInitialize()
                 args = {
                     testGroup = {
                         type = "group",
-                        name = "Test Timer",
+                        name = "Unlock Anchors",
                         inline = true,
                         order = 0,
                         args = {
-                            testTime = {
-                                type = "input",
-                                name = "Test Time (seconds)",
-                                desc = "Enter a test time in seconds to preview the timer format.",
-                                get = function() return tostring(Buffie._testTime or 125) end,
+                            buffsUnlocked = {
+                                type = "toggle",
+                                name = "Buffs",
+                                desc = "Unlock to move the buff anchor.",
+                                get = function() return Buffie.db.profile.buffsUnlocked end,
                                 set = function(_, val)
-                                    local t = tonumber(val) or 0
-                                    Buffie._testTime = t
-                                    Buffie._testExampleLast = nil
+                                    Buffie.db.profile.buffsUnlocked = val
+                                    Buffie:UpdateBuffies()
                                 end,
-                                width = 0.7,
-                                order = 1,
+                                order = 10,
                             },
-                            testExample = {
-                                type = "description",
-                                name = function()
-                                    if Buffie._testTicker then
-                                        local now = GetTime()
-                                        if not Buffie._testExampleLast or now - Buffie._testExampleLast >= 1 then
-                                            Buffie._testExampleLast = now
-                                            if Buffie._testTime and Buffie._testTime > 0 then
-                                                Buffie._testTime = Buffie._testTime - 1
-                                            end
-                                        end
-                                    end
-                                    local tval = tonumber(Buffie._testTime or 125)
-                                    local mode = Buffie.db.profile.displayMode
-                                    return "|cff00ff00Example: " .. FormatBuffieExample(tval, mode) .. "|r"
+                            weaponUnlocked = {
+                                type = "toggle",
+                                name = "Weapon Enchants",
+                                desc = "Unlock to move the weapon enchant anchor.",
+                                get = function() return Buffie.db.profile.weaponUnlocked end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponUnlocked = val
+                                    Buffie:UpdateBuffies()
                                 end,
-                                width = "full",
-                                order = 2,
+                                order = 11,
                             },
-                            testStart = {
-                                type = "execute",
-                                name = "",
-                                desc = "Play",
-                                image = "Interface\\Buttons\\UI-SpellbookIcon-NextPage-Up",
-                                imageWidth = 20,
-                                imageHeight = 20,
-                                func = function()
-                                    if Buffie._testTicker then Buffie:CancelTimer(Buffie._testTicker) end
-                                    Buffie._testTime = tonumber(Buffie._testTime or 125)
-                                    Buffie._testTicker = Buffie:ScheduleRepeatingTimer(function()
-                                        if Buffie._testTime and Buffie._testTime > 0 then
-                                            Buffie._testTime = Buffie._testTime - 1
-                                        else
-                                            if Buffie._testTicker then Buffie:CancelTimer(Buffie._testTicker) end
-                                            Buffie._testTicker = nil
-                                        end
-                                    end, 1)
+                            debuffUnlocked = {
+                                type = "toggle",
+                                name = "Debuffs ",
+                                desc = "Unlock to move the debuff anchor.",
+                                get = function() return Buffie.db.profile.debuffUnlocked end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffUnlocked = val
+                                    Buffie:UpdateBuffies()
                                 end,
-                                width = 0.15,
-                                order = 3,
-                            },
-                            testStop = {
-                                type = "execute",
-                                name = "",
-                                desc = "Stop",
-                                image = "Interface\\Buttons\\UI-SpellbookIcon-PrevPage-Up",
-                                imageWidth = 20,
-                                imageHeight = 20,
-                                func = function()
-                                    if Buffie._testTicker then Buffie:CancelTimer(Buffie._testTicker) end
-                                    Buffie._testTicker = nil
-                                end,
-                                width = 0.15,
-                                order = 4,
+                                order = 12,
                             },
                         },
                     },
@@ -1095,6 +1021,29 @@ function Buffie:OnInitialize()
                                 end,
                                 order = 3,
                             },
+                            testTime = {
+                                type = "input",
+                                name = "Test Time (seconds)",
+                                desc = "Enter a test time in seconds to preview the timer format.",
+                                get = function() return tostring(Buffie._testTime or 125) end,
+                                set = function(_, val)
+                                    local t = tonumber(val) or 0
+                                    Buffie._testTime = t
+                                    Buffie._testExampleLast = nil
+                                end,
+                                width = 0.7,
+                                order = 4,
+                            },
+                            testExample = {
+                                type = "description",
+                                name = function()
+                                    local tval = tonumber(Buffie._testTime or 125)
+                                    local mode = Buffie.db.profile.displayMode
+                                    return "|cff00ff00Example: " .. FormatBuffieExample(tval, mode) .. "|r"
+                                end,
+                                width = "full",
+                                order = 5,
+                            },
                         },
                     },
                     iconSettings = {
@@ -1125,14 +1074,7 @@ function Buffie:OnInitialize()
                                 end,
                                 order = 2,
                             },
-                        },
-                    },
-                    layout = {
-                        type = "group",
-                        name = "Layout",
-                        order = 3,
-                        inline = true,
-                        args = {
+                            -- Layout section moved here:
                             iconSpacing = {
                                 type = "range",
                                 name = "Buff Icon Spacing",
@@ -1142,7 +1084,7 @@ function Buffie:OnInitialize()
                                     Buffie.db.profile.iconSpacing = val
                                     Buffie:UpdateBuffies()
                                 end,
-                                order = 1,
+                                order = 10,
                             },
                             buffsPerRow = {
                                 type = "range",
@@ -1153,7 +1095,7 @@ function Buffie:OnInitialize()
                                     Buffie.db.profile.buffsPerRow = val
                                     Buffie:UpdateBuffies()
                                 end,
-                                order = 2,
+                                order = 11,
                             },
                             maxRows = {
                                 type = "range",
@@ -1164,21 +1106,116 @@ function Buffie:OnInitialize()
                                     Buffie.db.profile.maxRows = val
                                     Buffie:UpdateBuffies()
                                 end,
+                                order = 12,
+                            },
+                        },
+                    },
+                    weaponIconSettings = {
+                        type = "group",
+                        name = "Weapon Enchant Icon Settings",
+                        inline = true,
+                        order = 2.1,
+                        args = {
+                            weaponIconScale = {
+                                type = "range",
+                                name = "Weapon Icon Scale",
+                                min = 0.5, max = 2, step = 0.01,
+                                get = function() return Buffie.db.profile.weaponIconScale or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconScale = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 1,
+                            },
+                            weaponIconAlpha = {
+                                type = "range",
+                                name = "Weapon Icon Transparency",
+                                min = 0, max = 1, step = 0.01,
+                                get = function() return Buffie.db.profile.weaponIconAlpha or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconAlpha = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 2,
+                            },
+                            weaponIconSpacing = {
+                                type = "range",
+                                name = "Weapon Icon Spacing",
+                                min = 0, max = 32, step = 1,
+                                get = function() return Buffie.db.profile.weaponIconSpacing or 4 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconSpacing = val
+                                    Buffie:UpdateBuffies()
+                                end,
                                 order = 3,
                             },
-                            unlocked = {
-                                type = "toggle",
-                                name = "Unlock Buffs (Drag Anchor)",
-                                desc = "Unlock to move the buff anchor.",
-                                get = function() return Buffie.db.profile.unlocked end,
+                            weaponPerRow = {
+                                type = "range",
+                                name = "Weapon Per Row",
+                                min = 1, max = 2, step = 1,
+                                get = function() return Buffie.db.profile.weaponPerRow or 2 end,
                                 set = function(_, val)
-                                    Buffie.db.profile.unlocked = val
+                                    Buffie.db.profile.weaponPerRow = val
                                     Buffie:UpdateBuffies()
                                 end,
                                 order = 4,
                             },
                         },
                     },
+                    debuffIconSettings = {
+                        type = "group",
+                        name = "Debuff Icon Settings",
+                        inline = true,
+                        order = 2.2,
+                        args = {
+                            debuffIconScale = {
+                                type = "range",
+                                name = "Debuff Icon Scale",
+                                min = 0.5, max = 2, step = 0.01,
+                                get = function() return Buffie.db.profile.debuffIconScale or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffIconScale = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 1,
+                            },
+                            -- debuffIconAlpha slider removed
+                            debuffIconSpacing = {
+                                type = "range",
+                                name = "Debuff Icon Spacing",
+                                min = 0, max = 32, step = 1,
+                                get = function() return Buffie.db.profile.debuffIconSpacing or 4 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffIconSpacing = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 2,
+                            },
+                            debuffsPerRow = {
+                                type = "range",
+                                name = "Debuffs Per Row",
+                                min = 1, max = 16, step = 1,
+                                get = function() return Buffie.db.profile.debuffsPerRow or 8 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffsPerRow = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 3,
+                            },
+                            debuffMaxRows = {
+                                type = "range",
+                                name = "Debuff Max Rows",
+                                min = 1, max = 8, step = 1,
+                                get = function() return Buffie.db.profile.debuffMaxRows or 2 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffMaxRows = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 4,
+                            },
+                        },
+                    },
+                    -- layout group removed from root args
                     thresholds = {
                         type = "group",
                         name = "Text Color",
@@ -1189,7 +1226,7 @@ function Buffie:OnInitialize()
                                 type = "description",
                                 name = "Set color and operator for up to 3 thresholds. Buff timers will use the first matching threshold.",
                                 order = 0,
-                            },
+                        },
                             testExample = {
                                 type = "description",
                                 name = function()
@@ -1327,6 +1364,7 @@ function Buffie:OnInitialize()
                                     if not db.colorThresholds[2] then db.colorThresholds[2] = {} end
                                     db.colorThresholds[2].min = tonumber(val) or 0
                                     Buffie:UpdateBuffies()
+
                                 end,
                                 order = 6,
                             },
@@ -1424,6 +1462,7 @@ function Buffie:OnInitialize()
                             },
                         },
                     },
+
                     strobeGroup = {
                         type = "group",
                         name = "Strobe Effect",
@@ -1440,56 +1479,58 @@ function Buffie:OnInitialize()
                                 end,
                                 order = 1,
                             },
-                            strobeIconHz = {
-                                type = "range",
-                                name = "Icon Strobe Speed (Hz, 0=off)",
-                                desc = "How many fades per second. 0 disables icon strobe.",
-                                min = 0, max = 5, step = 0.1,
-                                get = function() return Buffie.db.profile.strobeIconHz or 0 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.strobeIconHz = val
-                                end,
-                                order = 2,
-                                disabled = function() return not Buffie.db.profile.strobeEnabled end,
-                            },
-                            strobeTextHz = {
-                                type = "range",
-                                name = "Text Strobe Speed (Hz, 0=off)",
-                                desc = "How many fades per second. 0 disables text strobe.",
-                                min = 0, max = 5, step = 0.1,
-                                get = function() return Buffie.db.profile.strobeTextHz or 0 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.strobeTextHz = val
-                                end,
-                                order = 3,
-                                disabled = function() return not Buffie.db.profile.strobeEnabled end,
-                            },
+                            -- Move threshold inputs up
                             strobeThresholdMin = {
                                 type = "input",
-                                name = "Strobe Threshold Minutes",
-                                desc = "Buffs with less than this many minutes+seconds left will strobe.",
+                                name = "Minutes",
+                                desc = "Buffs with less than this threshold many minutes+seconds left will strobe.",
                                 get = function() return tostring(Buffie.db.profile.strobeThresholdMin or 0) end,
                                 set = function(_, val)
                                     local v = tonumber(val) or 0
                                     if v < 0 then v = 0 end
                                     Buffie.db.profile.strobeThresholdMin = v
                                 end,
-                                order = 4,
+                                order = 2,
                                 width = 0.5,
                                 disabled = function() return not Buffie.db.profile.strobeEnabled end,
                             },
                             strobeThresholdSec = {
                                 type = "input",
-                                name = "Strobe Threshold Seconds",
-                                desc = "Buffs with less than this many minutes+seconds left will strobe.",
+                                name = "Sec",
+                                desc = "Buffs with less than this threshhold many minutes+seconds left will strobe.",
                                 get = function() return tostring(Buffie.db.profile.strobeThresholdSec or 0) end,
                                 set = function(_, val)
                                     local v = tonumber(val) or 0
                                     if v < 0 then v = 0 end
                                     Buffie.db.profile.strobeThresholdSec = v
                                 end,
-                                order = 5,
+                                order = 3,
                                 width = 0.5,
+                                disabled = function() return not Buffie.db.profile.strobeEnabled end,
+                            },
+                            -- Move speed sliders down
+                            strobeIconHz = {
+                                type = "range",
+                                name = "Icon & Text Speed",
+                                desc = "How many fades per second. 0 disables icon strobe.",
+                                min = 0, max = 5, step = 0.1,
+                                get = function() return Buffie.db.profile.strobeIconHz or 0 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.strobeIconHz = val
+                                end,
+                                order = 4,
+                                disabled = function() return not Buffie.db.profile.strobeEnabled end,
+                            },
+                            strobeTextHz = {
+                                type = "range",
+                                name = "Text Speed",
+                                desc = "How many fades per second.  0 disables text strobe.",
+                                min = 0, max = 5, step = 0.1,
+                                get = function() return Buffie.db.profile.strobeTextHz or 0 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.strobeTextHz = val
+                                end,
+                                order = 5,
                                 disabled = function() return not Buffie.db.profile.strobeEnabled end,
                             },
                         },
@@ -1516,6 +1557,7 @@ function Buffie:OnInitialize()
                         name = "Reset to Defaults",
                         func = function()
                             local db = Buffie.db.profile
+                            -- Buffs
                             db.fontSize = 12
                             db.displayMode = 0
                             db.iconScale = 1
@@ -1527,6 +1569,30 @@ function Buffie:OnInitialize()
                             db.maxRows = 2
                             db.unlocked = false
                             db.anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -13}
+                            db.buffsUnlocked = false
+                            -- Weapon enchants
+                            db.weaponAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -265, -13}
+                            db.weaponUnlocked = false
+                            db.weaponPerRow = 2
+                            db.weaponIconSpacing = 4
+                            db.weaponIconScale = 1
+                            db.weaponIconAlpha = 1
+                            -- Debuffs
+                            db.debuffAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", -205, -65}
+                            db.debuffUnlocked = false
+                            db.debuffsPerRow = 8
+                            db.debuffMaxRows = 2
+                            db.debuffIconSpacing = 4
+                            db.debuffIconScale = 1
+                            db.debuffIconAlpha = 1
+                            -- Other
+                            db.useStaticColor = false
+                            db.staticColor = {1, 1, 1}
+                            db.strobeEnabled = false
+                            db.strobeIconHz = 0
+                            db.strobeTextHz = 0
+                            db.strobeThresholdMin = 0
+                            db.strobeThresholdSec = 10
                             Buffie:RestoreAllSettings()
                             Buffie:UpdateBuffies()
                         end,
@@ -1562,9 +1628,25 @@ function Buffie:RestoreAllSettings()
         local relTo = ap and ap[2] and (_G[ap[2]] or UIParent) or UIParent
         BuffAnchorFrame:SetPoint(ap[1] or "TOPRIGHT", relTo, ap[3] or "TOPRIGHT", ap[4] or -205, ap[5] or -13)
     end
+    if WeaponEnchantAnchorFrame and db.weaponAnchorPoint then
+        WeaponEnchantAnchorFrame:ClearAllPoints()
+        local ap = db.weaponAnchorPoint
+        local relTo = ap and ap[2] and (_G[ap[2]] or UIParent) or UIParent
+        WeaponEnchantAnchorFrame:SetPoint(ap[1] or "TOPRIGHT", relTo, ap[3] or "TOPRIGHT", ap[4] or -265, ap[5] or -13)
+    end
+    if DebuffAnchorFrame and db.debuffAnchorPoint then
+        DebuffAnchorFrame:ClearAllPoints()
+        local ap = db.debuffAnchorPoint
+        local relTo = ap and ap[2] and (_G[ap[2]] or UIParent) or UIParent
+        DebuffAnchorFrame:SetPoint(ap[1] or "TOPRIGHT", relTo, ap[3] or "TOPRIGHT", ap[4] or -205, ap[5] or -65)
+    end
 end
 
+-- After any settings change that affects anchor area, update the anchor frame size if it exists:
 function Buffie:UpdateBuffies()
+    if BuffAnchorFrame and BuffAnchorFrame.UpdateBackdrop then BuffAnchorFrame:UpdateBackdrop() end
+    if WeaponEnchantAnchorFrame and WeaponEnchantAnchorFrame.UpdateBackdrop then WeaponEnchantAnchorFrame:UpdateBackdrop() end
+    if DebuffAnchorFrame and DebuffAnchorFrame.UpdateBackdrop then DebuffAnchorFrame:UpdateBackdrop() end
     self:LayoutBuffs()
 end
 
