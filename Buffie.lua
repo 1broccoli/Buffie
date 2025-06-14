@@ -1,3 +1,10 @@
+--- fix alignment to move aligned based on relative position left right up or down.
+--- organize buffs by duration position
+--- demonstration of buffs,debuffs,weapon enchants *fix debuff and weapon enchant to work
+
+--- who buffed me
+-- add baby settings frame when adjusting anchors and shit
+
 local AceAddon = LibStub("AceAddon-3.0")
 local AceConsole = LibStub("AceConsole-3.0")
 local AceConfig = LibStub("AceConfig-3.0")
@@ -72,7 +79,6 @@ local defaults = {
         debuffMaxRows = 2,
         debuffIconSpacing = 4,
         debuffIconScale = 1,
-        debuffIconAlpha = 1,
     }
 }
 
@@ -557,19 +563,25 @@ function Buffie:HookBuffies()
                     local threshR, threshG, threshB = GetColorForTime(timeLeft, db.colorThresholds or defaultThresholds)
                     local sr, sg, sb = unpack(db.staticColor)
                     local out = formattedDuration
-                    -- Only color the unit letters (h, m, s) with static color, numbers with threshold color
-                    out = out:gsub("(%d+)([hms])", function(num, unit)
-                        return ("|cff%02x%02x%02x%s|r|cff%02x%02x%02x%s|r"):
-                            format(
-                                math.floor(threshR*255), math.floor(threshG*255), math.floor(threshB*255), num,
-                                math.floor(sr*255), math.floor(sg*255), math.floor(sb*255), unit
-                            )
-                    end)
-                    -- Also color any standalone units (e.g. "m" or "s" not preceded by a digit)
-                    out = out:gsub("([^%d])([hms])", function(prefix, unit)
-                        return prefix .. ("|cff%02x%02x%02x%s|r"):
-                            format(math.floor(sr*255), math.floor(sg*255), math.floor(sb*255), unit)
-                    end)
+                    if db.displayMode == 2 then
+                        -- mm:ss mode: color the entire string with static color
+                        out = ("|cff%02x%02x%02x%s|r"):
+                            format(math.floor(sr*255), math.floor(sg*255), math.floor(sb*255), out)
+                    else
+                        -- Only color the unit letters (h, m, s) with static color, numbers with threshold color
+                        out = out:gsub("(%d+)([hms])", function(num, unit)
+                            return ("|cff%02x%02x%02x%s|r|cff%02x%02x%02x%s|r"):
+                                format(
+                                    math.floor(threshR*255), math.floor(threshG*255), math.floor(threshB*255), num,
+                                    math.floor(sr*255), math.floor(sg*255), math.floor(sb*255), unit
+                                )
+                        end)
+                        -- Also color any standalone units (e.g. "m" or "s" not preceded by a digit)
+                        out = out:gsub("([^%d])([hms])", function(prefix, unit)
+                            return prefix .. ("|cff%02x%02x%02x%s|r"):
+                                format(math.floor(sr*255), math.floor(sg*255), math.floor(sb*255), unit)
+                        end)
+                    end
                     button.duration:SetText(out)
                 else
                     r, g, b = GetColorForTime(timeLeft, db.colorThresholds or defaultThresholds)
@@ -616,51 +628,19 @@ function Buffie:LayoutBuffs()
     local timerAlpha = db.timerAlpha or 1
     local iconSpacing = db.iconSpacing or 4
 
-    local weaponPerRow = db.weaponPerRow or 2
-    local weaponIconSpacing = db.weaponIconSpacing or 4
-    local weaponIconScale = db.weaponIconScale or 1
-    local weaponIconAlpha = db.weaponIconAlpha or 1
-
-    local debuffsPerRow = db.debuffsPerRow or 8
-    local debuffMaxRows = db.debuffMaxRows or 2
-    local debuffIconSpacing = db.debuffIconSpacing or 4
-    local debuffIconScale = db.debuffIconScale or 1
-    -- local debuffIconAlpha = db.debuffIconAlpha or 1 -- REMOVE: no longer used
-
     local anchor = CreateBuffAnchor()
-    local weaponAnchor = CreateWeaponEnchantAnchor()
-    local debuffAnchor = CreateDebuffAnchor()
-    local scale = iconScale
-    local iconSize = 32 * scale
 
     -- Buffs
     local parent = db.buffsUnlocked and anchor or UIParent
-    -- Weapon enchants
-    local weaponParent = db.weaponUnlocked and weaponAnchor or UIParent
-    -- Debuffs
-    local debuffParent = db.debuffUnlocked and debuffAnchor or UIParent
 
     -- Restore anchor positions
     if anchor.SafeRestoreAnchorPosition then anchor:SafeRestoreAnchorPosition() end
-    if weaponAnchor.SafeRestoreAnchorPosition then weaponAnchor:SafeRestoreAnchorPosition() end
-    if debuffAnchor.SafeRestoreAnchorPosition then debuffAnchor:SafeRestoreAnchorPosition() end
 
     -- Show/hide anchors
     if db.buffsUnlocked then anchor:Show() else anchor:Hide() end
-    if db.weaponUnlocked then weaponAnchor:Show() else weaponAnchor:Hide() end
-    if db.debuffUnlocked then debuffAnchor:Show() else debuffAnchor:Hide() end
 
     -- Layout buffs (use only buff settings)
     local totalBuffs = BUFF_ACTUAL_DISPLAY or 32
-    local shownCount = 0
-    local maxBuffs = buffsPerRow * maxRows
-    local buffScale = iconScale
-    local buffSpacing = iconSpacing
-    local buffAlpha = iconAlpha
-    local buffPerRow = buffsPerRow
-    local buffMaxRows = maxRows
-    local buffIconSize = 32 * buffScale
-
     local visibleBuffs = {}
     for i = 1, totalBuffs do
         local button = _G["BuffButton"..i]
@@ -673,23 +653,50 @@ function Buffie:LayoutBuffs()
         end
     end
 
+    -- Calculate per-row max heights
+    local rowHeights = {}
+    for row = 0, maxRows-1 do
+        local maxHeight = 0
+        for col = 0, buffsPerRow-1 do
+            local idx = row * buffsPerRow + col + 1
+            local button = visibleBuffs[idx]
+            if button then
+                button:SetScale(iconScale)
+                local iconHeight = 32 * iconScale
+                local textHeight = 0
+                if button.duration and button.duration.GetStringHeight then
+                    button.duration:SetFont(STANDARD_TEXT_FONT, db.fontSize, "OUTLINE")
+                    textHeight = button.duration:GetStringHeight() or 0
+                end
+                local totalHeight = iconHeight + textHeight + 2 -- +2 for spacing
+                if totalHeight > maxHeight then maxHeight = totalHeight end
+            end
+        end
+        rowHeights[row+1] = maxHeight > 0 and maxHeight or (32 * iconScale)
+    end
+
+    -- Place buttons using calculated row heights
     for i = 1, #visibleBuffs do
         local button = visibleBuffs[i]
-        if i <= maxBuffs then
+        if i <= buffsPerRow * maxRows then
             button:ClearAllPoints()
-            button:SetScale(buffScale)
-            button:SetAlpha(buffAlpha)
+            button:SetScale(iconScale)
+            button:SetAlpha(iconAlpha)
             button:Show()
-            local row = math.floor((i-1) / buffPerRow)
-            local col = (i-1) % buffPerRow
+            local row = math.floor((i-1) / buffsPerRow)
+            local col = (i-1) % buffsPerRow
             if row == 0 and col == 0 then
                 button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, 0)
             elseif col == 0 then
-                local prevRowBtn = visibleBuffs[i - buffPerRow]
-                button:SetPoint("TOPRIGHT", prevRowBtn, "BOTTOMRIGHT", 0, -buffSpacing)
+                local prevRowBtn = visibleBuffs[i - buffsPerRow]
+                local yOffset = 0
+                for r = 1, row do
+                    yOffset = yOffset - (rowHeights[r] + iconSpacing)
+                end
+                button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, yOffset)
             else
                 local prevBtn = visibleBuffs[i - 1]
-                button:SetPoint("RIGHT", prevBtn, "LEFT", -buffSpacing, 0)
+                button:SetPoint("RIGHT", prevBtn, "LEFT", -iconSpacing, 0)
             end
             if db.buffsUnlocked then
                 button:EnableMouse(false)
@@ -704,68 +711,91 @@ function Buffie:LayoutBuffs()
         local button = _G["BuffButton"..i]
         if button then button:Show() end
     end
+end
 
-    -- Layout weapon enchants (independent layout)
-    for i = 1, 2 do
-        local button = _G["TempEnchant"..i]
-        if button then
-            button:SetParent(weaponParent)
-            if db.weaponUnlocked then
-                button:ClearAllPoints()
-                button:SetScale(weaponIconScale)
-                button:SetAlpha(weaponIconAlpha)
-                button:SetPoint("TOPRIGHT", weaponAnchor, "TOPRIGHT", -(i-1)*(32*weaponIconScale+weaponIconSpacing), 0)
-                button:Show()
-                button:EnableMouse(false)
-            else
-                button:SetScale(1)
-                button:SetAlpha(1)
-                button:EnableMouse(true)
-            end
-        end
-    end
+function Buffie:LayoutDebuffs()
+    if not self.db or not self.db.profile then return end
+    local db = self.db.profile
 
-    -- Layout debuffs (independent layout, use only debuff settings)
+    local debuffsPerRow = db.debuffsPerRow or 8
+    local maxRows = db.debuffMaxRows or 2
+    local iconScale = db.debuffIconScale or 1
+    local iconAlpha = db.debuffIconAlpha or 1
+    local iconSpacing = db.debuffIconSpacing or 4
+
+    local anchor = CreateDebuffAnchor()
+    local parent = db.debuffUnlocked and anchor or UIParent
+
+    -- Restore anchor positions
+    if anchor.SafeRestoreAnchorPosition then anchor:SafeRestoreAnchorPosition() end
+
+    -- Show/hide anchor
+    if db.debuffUnlocked then anchor:Show() else anchor:Hide() end
+
+    -- Layout debuffs
     local totalDebuffs = DEBUFF_ACTUAL_DISPLAY or 16
-    local debuffPerRow = debuffsPerRow
-    local debuffMaxRows = debuffMaxRows
-    local debuffScale = debuffIconScale
-    local debuffIconSize = 32 * debuffScale
-    local debuffSpacing = debuffIconSpacing
-    -- local debuffAlpha = debuffIconAlpha -- REMOVE: no longer used
     local visibleDebuffs = {}
     for i = 1, totalDebuffs do
         local button = _G["DebuffButton"..i]
         if button then
-            button:SetParent(debuffParent)
+            button:SetParent(parent)
             button:Show()
             if button:IsVisible() then
                 table.insert(visibleDebuffs, button)
             end
         end
     end
+
+    -- Calculate per-row max heights
+    local rowHeights = {}
+    for row = 0, maxRows-1 do
+        local maxHeight = 0
+        for col = 0, debuffsPerRow-1 do
+            local idx = row * debuffsPerRow + col + 1
+            local button = visibleDebuffs[idx]
+            if button then
+                button:SetScale(iconScale)
+                local iconHeight = 32 * iconScale
+                local textHeight = 0
+                if button.duration and button.duration.GetStringHeight then
+                    button.duration:SetFont(STANDARD_TEXT_FONT, db.fontSize or 12, "OUTLINE")
+                    textHeight = button.duration:GetStringHeight() or 0
+                end
+                local totalHeight = iconHeight + textHeight + 2
+                if totalHeight > maxHeight then maxHeight = totalHeight end
+            end
+        end
+        rowHeights[row+1] = maxHeight > 0 and maxHeight or (32 * iconScale)
+    end
+
+    -- Place buttons using calculated row heights
     for i = 1, #visibleDebuffs do
         local button = visibleDebuffs[i]
-        if i <= debuffPerRow * debuffMaxRows then
+        if i <= debuffsPerRow * maxRows then
             button:ClearAllPoints()
-            button:SetScale(debuffScale)
-            button:SetAlpha(1) -- Always fully opaque for now
+            button:SetScale(iconScale)
+            -- REMOVE: Do not set alpha for debuffs (leave Blizzard default)
+            -- button:SetAlpha(iconAlpha)
             button:Show()
-            local row = math.floor((i-1) / debuffPerRow)
-            local col = (i-1) % debuffPerRow
+            local row = math.floor((i-1) / debuffsPerRow)
+            local col = (i-1) % debuffsPerRow
             if row == 0 and col == 0 then
-                button:SetPoint("TOPRIGHT", debuffAnchor, "TOPRIGHT", 0, 0)
+                button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, 0)
             elseif col == 0 then
-                local prevRowBtn = visibleDebuffs[i - debuffPerRow]
-                button:SetPoint("TOPRIGHT", prevRowBtn, "BOTTOMRIGHT", 0, -debuffSpacing)
+                local yOffset = 0
+                for r = 1, row do
+                    yOffset = yOffset - (rowHeights[r] + iconSpacing)
+                end
+                button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, yOffset)
             else
                 local prevBtn = visibleDebuffs[i - 1]
-                button:SetPoint("RIGHT", prevBtn, "LEFT", -debuffSpacing, 0)
+                button:SetPoint("RIGHT", prevBtn, "LEFT", -iconSpacing, 0)
             end
-            -- REMOVE: debuff icon alpha setting
-            -- if button.icon and button.icon.SetAlpha then
-            --     button.icon:SetAlpha(debuffAlpha)
-            -- end
+            if db.debuffUnlocked then
+                button:EnableMouse(false)
+            else
+                button:EnableMouse(true)
+            end
         else
             button:Hide()
         end
@@ -776,6 +806,49 @@ function Buffie:LayoutBuffs()
     end
 end
 
+function Buffie:LayoutWeaponEnchants()
+    if not self.db or not self.db.profile then return end
+    local db = self.db.profile
+
+    local weaponPerRow = db.weaponPerRow or 2
+    local iconScale = db.weaponIconScale or 1
+    local iconAlpha = db.weaponIconAlpha or 1
+    local iconSpacing = db.weaponIconSpacing or 4
+
+    local anchor = CreateWeaponEnchantAnchor()
+    local parent = db.weaponUnlocked and anchor or UIParent
+
+    -- Restore anchor positions
+    if anchor.SafeRestoreAnchorPosition then anchor:SafeRestoreAnchorPosition() end
+
+    -- Show/hide anchor
+    if db.weaponUnlocked then anchor:Show() else anchor:Hide() end
+
+    -- Layout weapon enchants (usually 2: MainHand, OffHand)
+    for i = 1, 2 do
+        local button = _G["TempEnchant"..i]
+        if button then
+            button:SetParent(parent)
+            button:ClearAllPoints()
+            button:SetScale(iconScale)
+            button:SetAlpha(iconAlpha)
+            button:Show()
+            if i == 1 then
+                button:SetPoint("TOPRIGHT", anchor, "TOPRIGHT", 0, 0)
+            else
+                local prevBtn = _G["TempEnchant"..(i-1)]
+                button:SetPoint("RIGHT", prevBtn, "LEFT", -iconSpacing, 0)
+            end
+            if db.weaponUnlocked then
+                button:EnableMouse(false)
+            else
+                button:EnableMouse(true)
+            end
+        end
+    end
+end
+
+-- Addon initialization and default settings
 local updateInterval = 0.1
 local timeSinceLastUpdate = 0
 local function TimerUpdater(self, elapsed)
@@ -787,50 +860,55 @@ local function TimerUpdater(self, elapsed)
         timeSinceLastUpdate = 0
     end
 
-    -- Strobe animation update
+    -- Strobe animation update (Buffs only, NOT Debuffs or Weapon Enchants)
     local db = Buffie and Buffie.db and Buffie.db.profile
     if db and db.strobeEnabled and ((db.strobeIconHz or 0) > 0 or (db.strobeTextHz or 0) > 0) then
         local strobeThreshold = minsec_to_seconds(db.strobeThresholdMin or 0, db.strobeThresholdSec or 0)
         for i = 1, (BUFF_ACTUAL_DISPLAY or 32) do
             local button = _G["BuffButton"..i]
+            -- Only apply strobe to BuffButton frames, not DebuffButton or TempEnchant
             if button and button:IsVisible() and strobeState[button] and button.timeLeft then
-                local timeLeft = button.timeLeft or strobeState[button].lastTimeLeft or 0
-                if timeLeft <= strobeThreshold then
-                    -- Icon strobe: only affect icon if strobeIconHz > 0
-                    if (db.strobeIconHz or 0) > 0 then
-                        strobeState[button].iconPhase = (strobeState[button].iconPhase or 0) + elapsed
-                        local freq = db.strobeIconHz
-                        local iconAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].iconPhase)
-                        if button.SetAlpha then button:SetAlpha(iconAlpha) end
-                        if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(iconAlpha) end
+                local name = button:GetName() or ""
+                if name:find("^BuffButton") then
+                    local timeLeft = button.timeLeft or strobeState[button].lastTimeLeft or 0
+                    if timeLeft <= strobeThreshold then
+                        -- Icon strobe: only affect icon if strobeIconHz > 0
+                        if (db.strobeIconHz or 0) > 0 then
+                            strobeState[button].iconPhase = (strobeState[button].iconPhase or 0) + elapsed
+                            local freq = db.strobeIconHz
+                            local iconAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].iconPhase)
+                            if button.SetAlpha then button:SetAlpha(iconAlpha) end
+                            if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(iconAlpha) end
+                        else
+                            -- Reset icon alpha if icon strobe is off
+                            if button.SetAlpha then button:SetAlpha(db.iconAlpha or 1) end
+                            if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(db.iconAlpha or 1) end
+                            strobeState[button].iconPhase = 0
+                        end
+
+                        -- Text strobe: only affect timer text if strobeTextHz > 0
+                        if (db.strobeTextHz or 0) > 0 then
+                            strobeState[button].textPhase = (strobeState[button].textPhase or 0) + elapsed
+                            local freq = db.strobeTextHz
+                            local textAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].textPhase)
+                            if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(textAlpha) end
+                        else
+                            -- Reset text alpha if text strobe is off
+                            if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(db.timerAlpha or 1) end
+                            strobeState[button].textPhase = 0
+                        end
                     else
-                        -- Reset icon alpha if icon strobe is off
+                        -- Reset both icon and text alpha if above threshold
                         if button.SetAlpha then button:SetAlpha(db.iconAlpha or 1) end
                         if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(db.iconAlpha or 1) end
-                        strobeState[button].iconPhase = 0
-                    end
-
-                    -- Text strobe: only affect timer text if strobeTextHz > 0
-                    if (db.strobeTextHz or 0) > 0 then
-                        strobeState[button].textPhase = (strobeState[button].textPhase or 0) + elapsed
-                        local freq = db.strobeTextHz
-                        local textAlpha = 0.5 + 0.5 * math.sin(2 * math.pi * freq * strobeState[button].textPhase)
-                        if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(textAlpha) end
-                    else
-                        -- Reset text alpha if text strobe is off
                         if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(db.timerAlpha or 1) end
+                        strobeState[button].iconPhase = 0
                         strobeState[button].textPhase = 0
                     end
-                else
-                    -- Reset both icon and text alpha if above threshold
-                    if button.SetAlpha then button:SetAlpha(db.iconAlpha or 1) end
-                    if button.icon and button.icon.SetAlpha then button.icon:SetAlpha(db.iconAlpha or 1) end
-                    if button.duration and button.duration.SetAlpha then button.duration:SetAlpha(db.timerAlpha or 1) end
-                    strobeState[button].iconPhase = 0
-                    strobeState[button].textPhase = 0
                 end
             end
         end
+        -- Do NOT strobe DebuffButton or TempEnchant here; leave Blizzard default
     end
 end
 
@@ -942,13 +1020,13 @@ function Buffie:OnInitialize()
                 args = {
                     testGroup = {
                         type = "group",
-                        name = "Unlock Anchors",
+                        name = "Unlock Buff Anchor",
                         inline = true,
                         order = 0,
                         args = {
                             buffsUnlocked = {
                                 type = "toggle",
-                                name = "Buffs",
+                                name = "Unlock Buffs Anchor",
                                 desc = "Unlock to move the buff anchor.",
                                 get = function() return Buffie.db.profile.buffsUnlocked end,
                                 set = function(_, val)
@@ -956,28 +1034,6 @@ function Buffie:OnInitialize()
                                     Buffie:UpdateBuffies()
                                 end,
                                 order = 10,
-                            },
-                            weaponUnlocked = {
-                                type = "toggle",
-                                name = "Weapon Enchants",
-                                desc = "Unlock to move the weapon enchant anchor.",
-                                get = function() return Buffie.db.profile.weaponUnlocked end,
-                                set = function(_, val)
-                                    Buffie.db.profile.weaponUnlocked = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 11,
-                            },
-                            debuffUnlocked = {
-                                type = "toggle",
-                                name = "Debuffs ",
-                                desc = "Unlock to move the debuff anchor.",
-                                get = function() return Buffie.db.profile.debuffUnlocked end,
-                                set = function(_, val)
-                                    Buffie.db.profile.debuffUnlocked = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 12,
                             },
                         },
                     },
@@ -1110,112 +1166,6 @@ function Buffie:OnInitialize()
                             },
                         },
                     },
-                    weaponIconSettings = {
-                        type = "group",
-                        name = "Weapon Enchant Icon Settings",
-                        inline = true,
-                        order = 2.1,
-                        args = {
-                            weaponIconScale = {
-                                type = "range",
-                                name = "Weapon Icon Scale",
-                                min = 0.5, max = 2, step = 0.01,
-                                get = function() return Buffie.db.profile.weaponIconScale or 1 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.weaponIconScale = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 1,
-                            },
-                            weaponIconAlpha = {
-                                type = "range",
-                                name = "Weapon Icon Transparency",
-                                min = 0, max = 1, step = 0.01,
-                                get = function() return Buffie.db.profile.weaponIconAlpha or 1 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.weaponIconAlpha = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 2,
-                            },
-                            weaponIconSpacing = {
-                                type = "range",
-                                name = "Weapon Icon Spacing",
-                                min = 0, max = 32, step = 1,
-                                get = function() return Buffie.db.profile.weaponIconSpacing or 4 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.weaponIconSpacing = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 3,
-                            },
-                            weaponPerRow = {
-                                type = "range",
-                                name = "Weapon Per Row",
-                                min = 1, max = 2, step = 1,
-                                get = function() return Buffie.db.profile.weaponPerRow or 2 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.weaponPerRow = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 4,
-                            },
-                        },
-                    },
-                    debuffIconSettings = {
-                        type = "group",
-                        name = "Debuff Icon Settings",
-                        inline = true,
-                        order = 2.2,
-                        args = {
-                            debuffIconScale = {
-                                type = "range",
-                                name = "Debuff Icon Scale",
-                                min = 0.5, max = 2, step = 0.01,
-                                get = function() return Buffie.db.profile.debuffIconScale or 1 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.debuffIconScale = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 1,
-                            },
-                            -- debuffIconAlpha slider removed
-                            debuffIconSpacing = {
-                                type = "range",
-                                name = "Debuff Icon Spacing",
-                                min = 0, max = 32, step = 1,
-                                get = function() return Buffie.db.profile.debuffIconSpacing or 4 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.debuffIconSpacing = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 2,
-                            },
-                            debuffsPerRow = {
-                                type = "range",
-                                name = "Debuffs Per Row",
-                                min = 1, max = 16, step = 1,
-                                get = function() return Buffie.db.profile.debuffsPerRow or 8 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.debuffsPerRow = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 3,
-                            },
-                            debuffMaxRows = {
-                                type = "range",
-                                name = "Debuff Max Rows",
-                                min = 1, max = 8, step = 1,
-                                get = function() return Buffie.db.profile.debuffMaxRows or 2 end,
-                                set = function(_, val)
-                                    Buffie.db.profile.debuffMaxRows = val
-                                    Buffie:UpdateBuffies()
-                                end,
-                                order = 4,
-                            },
-                        },
-                    },
-                    -- layout group removed from root args
                     thresholds = {
                         type = "group",
                         name = "Text Color",
@@ -1537,10 +1487,150 @@ function Buffie:OnInitialize()
                     },
                 },
             },
+            debuffs = {
+                type = "group",
+                name = "Debuffs",
+                order = 2,
+                args = {
+                    unlockDebuff = {
+                        type = "toggle",
+                        name = "Unlock Debuff Anchor",
+                        desc = "Unlock to move the debuff anchor.",
+                        get = function() return Buffie.db.profile.debuffUnlocked end,
+                        set = function(_, val)
+                            Buffie.db.profile.debuffUnlocked = val
+                            Buffie:UpdateBuffies()
+                        end,
+                        order = 1,
+                    },
+                    debuffIconSettings = {
+                        type = "group",
+                        name = "Debuff Icon Settings",
+                        inline = true,
+                        order = 2,
+                        args = {
+                            debuffIconScale = {
+                                type = "range",
+                                name = "Debuff Icon Scale",
+                                min = 0.5, max = 2, step = 0.01,
+                                get = function() return Buffie.db.profile.debuffIconScale or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffIconScale = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 1,
+                            },
+                            debuffIconSpacing = {
+                                type = "range",
+                                name = "Debuff Icon Spacing",
+                                min = 0, max = 32, step = 1,
+                                get = function() return Buffie.db.profile.debuffIconSpacing or 4 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffIconSpacing = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 2,
+                            },
+                            debuffsPerRow = {
+                                type = "range",
+                                name = "Debuffs Per Row",
+                                min = 1, max = 16, step = 1,
+                                get = function() return Buffie.db.profile.debuffsPerRow or 8 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffsPerRow = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 3,
+                            },
+                            debuffMaxRows = {
+                                type = "range",
+                                name = "Debuff Max Rows",
+                                min = 1, max = 8, step = 1,
+                                get = function() return Buffie.db.profile.debuffMaxRows or 2 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.debuffMaxRows = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 4,
+                            },
+                        },
+                    },
+                },
+            },
+            weaponEnchants = {
+                type = "group",
+                name = "Weapon Enchants",
+                order = 3,
+                args = {
+                    unlockWeapon = {
+                        type = "toggle",
+                        name = "Unlock Weapon Enchant Anchor",
+                        desc = "Unlock to move the weapon enchant anchor.",
+                        get = function() return Buffie.db.profile.weaponUnlocked end,
+                        set = function(_, val)
+                            Buffie.db.profile.weaponUnlocked = val
+                            Buffie:UpdateBuffies()
+                        end,
+                        order = 1,
+                    },
+                    weaponIconSettings = {
+                        type = "group",
+                        name = "Weapon Enchant Icon Settings",
+                        inline = true,
+                        order = 2,
+                        args = {
+                            weaponIconScale = {
+                                type = "range",
+                                name = "Weapon Icon Scale",
+                                min = 0.5, max = 2, step = 0.01,
+                                get = function() return Buffie.db.profile.weaponIconScale or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconScale = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 1,
+                            },
+                            weaponIconAlpha = {
+                                type = "range",
+                                name = "Weapon Icon Transparency",
+                                min = 0, max = 1, step = 0.01,
+                                get = function() return Buffie.db.profile.weaponIconAlpha or 1 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconAlpha = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 2,
+                            },
+                            weaponIconSpacing = {
+                                type = "range",
+                                name = "Weapon Icon Spacing",
+                                min = 0, max = 32, step = 1,
+                                get = function() return Buffie.db.profile.weaponIconSpacing or 4 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponIconSpacing = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 3,
+                            },
+                            weaponPerRow = {
+                                type = "range",
+                                name = "Weapon Per Row",
+                                min = 1, max = 2, step = 1,
+                                get = function() return Buffie.db.profile.weaponPerRow or 2 end,
+                                set = function(_, val)
+                                    Buffie.db.profile.weaponPerRow = val
+                                    Buffie:UpdateBuffies()
+                                end,
+                                order = 4,
+                            },
+                        },
+                    },
+                },
+            },
             actions = {
                 type = "group",
                 name = "Reset/Save",
-                order = 5,
+                order = 10,
                 args = {
                     saveAll = {
                         type = "execute",
@@ -1551,6 +1641,15 @@ function Buffie:OnInitialize()
                             Buffie:UpdateBuffies()
                         end,
                         order = 1,
+                    },
+                    alignAnchors = {
+                        type = "execute",
+                        name = "Align All Anchors",
+                        desc = "Align buff, debuff, and weapon anchors vertically (no reset).",
+                        func = function()
+                            Buffie:AlignAllAnchors()
+                        end,
+                        order = 1.5,
                     },
                     resetDefaults = {
                         type = "execute",
@@ -1642,18 +1741,206 @@ function Buffie:RestoreAllSettings()
     end
 end
 
--- After any settings change that affects anchor area, update the anchor frame size if it exists:
+-- Helper: Get a unique key for tracking (spellID + auraType + destGUID)
+local function Buffie_AuraKey(spellID, auraType, destGUID)
+    return tostring(spellID) .. ":" .. (auraType or "") .. ":" .. (destGUID or "")
+end
+
+-- Table to track recent aura sources by spellID and aura type
+local Buffie_AuraSources = {}
+
+-- Helper: Clean up old entries (keep only recent, e.g. 30s)
+-- Change: Do NOT clean up entries for auras that are still active on the player.
+local function Buffie_CleanupAuraSources()
+    local now = GetTime()
+    local activeAuras = {}
+
+    -- Collect all active buffs and debuffs on the player
+    for i = 1, 40 do
+        local name, _, _, _, _, _, _, _, _, spellId = UnitBuff("player", i)
+        if not name then break end
+        local key = Buffie_AuraKey(spellId, "BUFF", UnitGUID("player"))
+        activeAuras[key] = true
+    end
+    for i = 1, 40 do
+        if not name then break end
+        local key = Buffie_AuraKey(spellId, "DEBUFF", UnitGUID("player"))
+        activeAuras[key] = true
+    end
+
+    -- Only remove entries that are both expired (older than 30s) and not currently active
+    for key, data in pairs(Buffie_AuraSources) do
+        if (now - data.time) > 30 and not activeAuras[key] then
+            Buffie_AuraSources[key] = nil
+        end
+    end
+end
+
+-- Combat log event handler to track aura sources
+local function Buffie_CombatLogEventUnfiltered(self, event)
+    local _, subevent, _, srcGUID, srcName, _, _, destGUID, destName, _, _, spellID, spellName = CombatLogGetCurrentEventInfo()
+    if not subevent or not spellID or not destGUID then return end
+
+    -- Only track aura applications/removals
+    if subevent == "SPELL_AURA_APPLIED" or subevent == "SPELL_AURA_REFRESH" then
+        -- Only track buffs/debuffs on the player
+        if destGUID == UnitGUID("player") then
+            local auraType = "BUFF"
+            if subevent:find("DEBUFF") or (spellName and spellName:find("Debuff")) then
+                auraType = "DEBUFF"
+            end
+            local key = Buffie_AuraKey(spellID, auraType, destGUID)
+            Buffie_AuraSources[key] = { caster = srcName or "Unknown", time = GetTime() }
+        end
+    end
+    -- Clean up old entries occasionally
+    if math.random(1, 10) == 1 then Buffie_CleanupAuraSources() end
+end
+
+-- Utility: Try to get the source of a buff/debuff using combat log tracking
+local function Buffie_GetAuraSource(unit, index, filter)
+    if unit ~= "player" then return "Unknown", "UNKNOWN" end
+    local name, _, _, _, _, _, _, _, _, spellId = UnitAura(unit, index, filter)
+    if not spellId then return "Unknown", "UNKNOWN" end
+    local auraType = (filter and filter:find("HARMFUL")) and "DEBUFF" or "BUFF"
+    local key = Buffie_AuraKey(spellId, auraType, UnitGUID("player"))
+    local entry = Buffie_AuraSources[key]
+    if entry and entry.caster then
+        -- Try to get class for color
+        local class
+        if entry.caster == UnitName("player") then
+            class = select(2, UnitClass("player"))
+        else
+            for i = 1, GetNumGroupMembers() do
+                local unit = IsInRaid() and ("raid"..i) or ("party"..i)
+                if UnitExists(unit) and UnitName(unit) == entry.caster then
+                    class = select(2, UnitClass(unit))
+                    break
+                end
+            end
+        end
+        return entry.caster, class or "UNKNOWN"
+    end
+
+    -- Only heuristically treat as self-cast for known self-buffs (food/drink/mount), not all buffs
+    local selfBuffKeywords = {
+        "Food", "Drink", "Well Fed", "Restores", "Restoring", "Mount", "Increases run speed", "Speed increased", "Riding", "Regeneration", "Mana Regeneration"
+    }
+    local tooltip = Buffie._auraTooltip or CreateFrame("GameTooltip", "BuffieAuraScanTooltip", nil, "GameTooltipTemplate")
+    Buffie._auraTooltip = tooltip
+    tooltip:SetOwner(UIParent, "ANCHOR_NONE")
+    tooltip:ClearLines()
+    tooltip:SetUnitAura(unit, index, filter)
+    for i = 2, tooltip:NumLines() do
+        local line = _G["BuffieAuraScanTooltipTextLeft"..i]
+        if line then
+            local text = line:GetText()
+            if text then
+                for _, kw in ipairs(selfBuffKeywords) do
+                    if text:find(kw) then
+                        return UnitName("player"), select(2, UnitClass("player"))
+                    end
+                end
+            end
+        end
+    end
+
+    -- Fallback: do NOT assume self-cast for all buffs, only for debuffs (Blizzard debuffs are never self-cast)
+    return "Unknown", "UNKNOWN"
+end
+
+-- Helper: Get class color hex or fallback to red for unknown
+local function Buffie_GetClassColorHex(class)
+    if not class or class == "UNKNOWN" then
+        return "ff0000"
+    end
+    local c = RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
+    if c then
+        return string.format("%02x%02x%02x", c.r*255, c.g*255, c.b*255)
+    end
+    return "ff0000"
+end
+
+-- Tooltip post-hook for buffs
+local function Buffie_GameTooltip_SetUnitAura_Hook(tooltip, unit, index, filter)
+    if unit == "player" and index then
+        local source, class = Buffie_GetAuraSource(unit, index, filter)
+        local color = Buffie_GetClassColorHex(class)
+        tooltip:AddLine("Buffed by: |cff"..color..(source or "Unknown").."|r")
+        tooltip:Show()
+    end
+end
+
+-- Tooltip post-hook for debuffs
+local function Buffie_GameTooltip_SetUnitDebuff_Hook(tooltip, unit, index, filter)
+    if unit == "player" and index then
+        local source, class = Buffie_GetAuraSource(unit, index, filter)
+        local color = Buffie_GetClassColorHex(class)
+        tooltip:AddLine("Debuffed by: |cff"..color..(source or "Unknown").."|r")
+        tooltip:Show()
+    end
+end
+
+
+
+-- Hook GameTooltip:SetUnitAura and SetUnitDebuff so our line is always appended
+if not Buffie._tooltipAuraHooked then
+    hooksecurefunc(GameTooltip, "SetUnitAura", Buffie_GameTooltip_SetUnitAura_Hook)
+    hooksecurefunc(GameTooltip, "SetUnitDebuff", Buffie_GameTooltip_SetUnitDebuff_Hook)
+    Buffie._tooltipAuraHooked = true
+end
+
+-- Register combat log event on login
+local function Buffie_RegisterCombatLog()
+    if not Buffie._combatLogFrame then
+        Buffie._combatLogFrame = CreateFrame("Frame")
+        Buffie._combatLogFrame:RegisterEvent("COMBAT_LOG_EVENT_UNFILTERED")
+        Buffie._combatLogFrame:SetScript("OnEvent", Buffie_CombatLogEventUnfiltered)
+    end
+end
+
+-- Call this after buffs/debuffs/enchants are updated
 function Buffie:UpdateBuffies()
+    if not BuffAnchorFrame then CreateBuffAnchor() end
+    if not WeaponEnchantAnchorFrame then CreateWeaponEnchantAnchor() end
+    if not DebuffAnchorFrame then CreateDebuffAnchor() end
+
     if BuffAnchorFrame and BuffAnchorFrame.UpdateBackdrop then BuffAnchorFrame:UpdateBackdrop() end
     if WeaponEnchantAnchorFrame and WeaponEnchantAnchorFrame.UpdateBackdrop then WeaponEnchantAnchorFrame:UpdateBackdrop() end
     if DebuffAnchorFrame and DebuffAnchorFrame.UpdateBackdrop then DebuffAnchorFrame:UpdateBackdrop() end
+
+    -- Always show/hide anchors based on unlock toggles, regardless of actives
+    local db = self.db and self.db.profile
+    if db then
+        if db.buffsUnlocked and BuffAnchorFrame then
+            BuffAnchorFrame:Show()
+        elseif BuffAnchorFrame then
+            BuffAnchorFrame:Hide()
+        end
+
+        if db.weaponUnlocked and WeaponEnchantAnchorFrame then
+            WeaponEnchantAnchorFrame:Show()
+        elseif WeaponEnchantAnchorFrame then
+            WeaponEnchantAnchorFrame:Hide()
+        end
+
+        if db.debuffUnlocked and DebuffAnchorFrame then
+            DebuffAnchorFrame:Show()
+        elseif DebuffAnchorFrame then
+            DebuffAnchorFrame:Hide()
+        end
+    end
+
     self:LayoutBuffs()
+    self:LayoutDebuffs()
+    self:LayoutWeaponEnchants()
 end
 
 function Buffie:OnEnable()
     SecureBuffFrameUpdateHook()
     self:HookBuffies()
     self:RestoreAllSettings()
+    Buffie_RegisterCombatLog()
     if not self.updater then
         self.updater = CreateFrame("Frame")
         self.updater:SetScript("OnUpdate", TimerUpdater)
@@ -1707,3 +1994,46 @@ end
 local eventFrame = CreateFrame("Frame")
 eventFrame:RegisterEvent("PLAYER_LOGIN")
 eventFrame:SetScript("OnEvent", OnPlayerLogin)
+
+function Buffie:AlignAllAnchors()
+    local db = self.db and self.db.profile
+    if not db then return end
+
+    -- Ensure anchor frames exist
+    if not BuffAnchorFrame then CreateBuffAnchor() end
+    if not WeaponEnchantAnchorFrame then CreateWeaponEnchantAnchor() end
+    if not DebuffAnchorFrame then CreateDebuffAnchor() end
+
+    -- Use the buff anchor's X offset for all
+    local x = (db.anchorPoint and db.anchorPoint[4]) or -205
+    local startY = -13
+    local gap = 8
+
+    -- Get heights (default to 40 if not available)
+    local buffHeight = (BuffAnchorFrame and select(2, BuffAnchorFrame:GetSize())) or 40
+    local weaponHeight = (WeaponEnchantAnchorFrame and select(2, WeaponEnchantAnchorFrame:GetSize())) or 40
+    local debuffHeight = (DebuffAnchorFrame and select(2, DebuffAnchorFrame:GetSize())) or 40
+
+    -- Calculate Y positions
+    local buffY = startY
+    local weaponY = buffY - buffHeight - gap
+    local debuffY = weaponY - weaponHeight - gap
+
+    -- Set anchor points in DB and on frames
+    db.anchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", x, buffY}
+    db.weaponAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", x, weaponY}
+    db.debuffAnchorPoint = {"TOPRIGHT", "UIParent", "TOPRIGHT", x, debuffY}
+
+    if BuffAnchorFrame then
+        BuffAnchorFrame:ClearAllPoints()
+        BuffAnchorFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", x, buffY)
+    end
+    if WeaponEnchantAnchorFrame then
+        WeaponEnchantAnchorFrame:ClearAllPoints()
+        WeaponEnchantAnchorFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", x, weaponY)
+    end
+    if DebuffAnchorFrame then
+        DebuffAnchorFrame:ClearAllPoints()
+        DebuffAnchorFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", x, debuffY)
+    end
+end
